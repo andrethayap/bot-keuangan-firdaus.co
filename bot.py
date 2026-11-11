@@ -159,69 +159,60 @@ async def hapus_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         await query.edit_message_text("✅ Catatan berhasil dihapus.")
 
-# ================= FITUR LAPORAN (HARIAN, MINGGUAN, BULANAN) =================
+# ================= FITUR LAPORAN (RINCI) =================
 def generate_laporan(fam_id, periode, judul):
-    # Query untuk pengeluaran
-    query_keluar = """SELECT kategori, SUM(jumlah) as total FROM transaksi 
-                      WHERE family_id=? AND tipe='pengeluaran' AND {cond} GROUP BY kategori"""
-    # Query untuk pemasukan
-    query_masuk = """SELECT kategori, SUM(jumlah) as total FROM transaksi 
-                     WHERE family_id=? AND tipe='pemasukan' AND {cond} GROUP BY kategori"""
-
     if periode == "harian":
         cond = "date(tanggal) = date('now', 'localtime')"
     elif periode == "mingguan":
-        # 'weekday 0' akan mundur ke hari Minggu terakhir, lalu -6 hari = Senin
-        # 'localtime' memastikan menggunakan waktu Indonesia, bukan UTC
         cond = "date(tanggal) >= date('now', 'localtime', 'weekday 0', '-6 days')"
     else: # bulanan
         cond = "strftime('%Y-%m', tanggal) = strftime('%Y-%m', 'now', 'localtime')"
 
-    cur_masuk = conn.execute(query_masuk.format(cond=cond), (fam_id,))
-    rows_masuk = cur_masuk.fetchall()
-    
-    cur_keluar = conn.execute(query_keluar.format(cond=cond), (fam_id,))
-    rows_keluar = cur_keluar.fetchall()
+    # Query untuk mengambil RINCIAN, bukan cuma total
+    cur = conn.execute(f"""SELECT tanggal, tipe, kategori, jumlah, keterangan 
+                           FROM transaksi 
+                           WHERE family_id=? AND {cond} 
+                           ORDER BY tanggal ASC""", (fam_id,))
+    rows = cur.fetchall()
 
-    if not rows_masuk and not rows_keluar:
+    if not rows:
         return f"Belum ada catatan untuk {judul.lower()}."
 
-    total_masuk = sum(r['total'] for r in rows_masuk) if rows_masuk else 0
-    total_keluar = sum(r['total'] for r in rows_keluar) if rows_keluar else 0
+    msg = f"📊 *Rincian Laporan {judul}*\n"
+    msg += "───────────────────\n"
+
+    total_masuk = 0
+    total_keluar = 0
+    current_date = ""
+
+    for r in rows:
+        # Format tanggal (misal: 2023-10-25T14:30 -> 25 Okt)
+        tgl_obj = datetime.fromisoformat(r['tanggal'])
+        tgl_str = tgl_obj.strftime("%d %b")
+        jam_str = tgl_obj.strftime("%H:%M")
+
+        # Kalau tanggalnya beda dari sebelumnya, cetak tanggal baru
+        if tgl_str != current_date:
+            if current_date != "": # Kasih jarak antar tanggal
+                msg += "\n"
+            msg += f"📅 *{tgl_str}*\n"
+            current_date = tgl_str
+
+        if r['tipe'] == "pemasukan":
+            msg += f"  🟢 {jam_str} | +Rp{r['jumlah']:,} ({r['kategori']}) - {r['keterangan']}\n"
+            total_masuk += r['jumlah']
+        else:
+            msg += f"  🔴 {jam_str} | -Rp{r['jumlah']:,} ({r['kategori']}) - {r['keterangan']}\n"
+            total_keluar += r['jumlah']
+
     saldo = total_masuk - total_keluar
-
-    msg = f"📊 *Laporan {judul}*\n\n"
     
-    if rows_masuk:
-        msg += "💰 *Pemasukan:*\n"
-        for r in rows_masuk:
-            msg += f"  + {r['kategori']}: Rp{r['total']:,}\n"
-        msg += f"  *Total Masuk: Rp{total_masuk:,}*\n\n"
+    msg += "───────────────────\n"
+    msg += f"💰 *Total Masuk:* Rp{total_masuk:,}\n"
+    msg += f"💸 *Total Keluar:* Rp{total_keluar:,}\n"
+    msg += f"⚖️ *Saldo Bersih:* Rp{saldo:,}\n"
 
-    if rows_keluar:
-        msg += "💸 *Pengeluaran:*\n"
-        for r in rows_keluar:
-            msg += f"  - {r['kategori']}: Rp{r['total']:,}\n"
-        msg += f"  *Total Keluar: Rp{total_keluar:,}*\n\n"
-
-    msg += f"⚖️ *Saldo Bersih: Rp{saldo:,}*"
     return msg
-
-async def laporan_harian(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    fam_id = get_family_id(update.effective_user.id)
-    msg = generate_laporan(fam_id, "harian", "Hari Ini")
-    await update.message.reply_text(msg, parse_mode='Markdown')
-
-async def laporan_mingguan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    fam_id = get_family_id(update.effective_user.id)
-    msg = generate_laporan(fam_id, "mingguan", "Minggu Ini")
-    await update.message.reply_text(msg, parse_mode='Markdown')
-
-async def laporan_bulanan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    fam_id = get_family_id(update.effective_user.id)
-    msg = generate_laporan(fam_id, "bulanan", "Bulan Ini")
-    await update.message.reply_text(msg, parse_mode='Markdown')
-
 # ================= MAIN =================
 def main():
     if not TOKEN:
