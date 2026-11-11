@@ -1,7 +1,7 @@
 import os
 import sqlite3
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeAllGroupChats
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -96,7 +96,6 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         user_id = query.from_user.id
         
         # Cek apakah ini dari menu pemasukan atau pengeluaran
-        # (Gaji, Bonus, Usaha dianggap pemasukan. Sisanya pengeluaran)
         tipe = "pemasukan" if kategori in ["Gaji", "Bonus", "Usaha"] else "pengeluaran"
         
         user_state[user_id] = {'kategori': kategori, 'tipe': tipe}
@@ -168,7 +167,7 @@ def generate_laporan(fam_id, periode, judul):
     else: # bulanan
         cond = "strftime('%Y-%m', tanggal) = strftime('%Y-%m', 'now', 'localtime')"
 
-    # Query untuk mengambil RINCIAN, bukan cuma total
+    # Query untuk mengambil RINCIAN
     cur = conn.execute(f"""SELECT tanggal, tipe, kategori, jumlah, keterangan 
                            FROM transaksi 
                            WHERE family_id=? AND {cond} 
@@ -186,14 +185,12 @@ def generate_laporan(fam_id, periode, judul):
     current_date = ""
 
     for r in rows:
-        # Format tanggal (misal: 2023-10-25T14:30 -> 25 Okt)
         tgl_obj = datetime.fromisoformat(r['tanggal'])
         tgl_str = tgl_obj.strftime("%d %b")
         jam_str = tgl_obj.strftime("%H:%M")
 
-        # Kalau tanggalnya beda dari sebelumnya, cetak tanggal baru
         if tgl_str != current_date:
-            if current_date != "": # Kasih jarak antar tanggal
+            if current_date != "":
                 msg += "\n"
             msg += f"📅 *{tgl_str}*\n"
             current_date = tgl_str
@@ -213,6 +210,24 @@ def generate_laporan(fam_id, periode, judul):
     msg += f"⚖️ *Saldo Bersih:* Rp{saldo:,}\n"
 
     return msg
+
+# --- FUNGSI PEMANGGIL LAPORAN ---
+async def laporan_harian(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    fam_id = get_family_id(update.effective_user.id)
+    msg = generate_laporan(fam_id, "harian", "Hari Ini")
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def laporan_mingguan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    fam_id = get_family_id(update.effective_user.id)
+    msg = generate_laporan(fam_id, "mingguan", "Minggu Ini")
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def laporan_bulanan(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    fam_id = get_family_id(update.effective_user.id)
+    msg = generate_laporan(fam_id, "bulanan", "Bulan Ini")
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+
 # ================= MAIN =================
 def main():
     if not TOKEN:
@@ -237,7 +252,7 @@ def main():
     
     # Menu otomatis
     async def post_init(application: Application) -> None:
-        await application.bot.set_my_commands([
+        commands = [
             BotCommand("start", "Buka menu utama"),
             BotCommand("catat", "Catat pengeluaran"),
             BotCommand("masuk", "Catat pemasukan"),
@@ -246,7 +261,13 @@ def main():
             BotCommand("bulanan", "Laporan bulan ini"),
             BotCommand("hapus", "Hapus catatan terakhir"),
             BotCommand("link", "Gabungkan laporan keluarga")
-        ])
+        ]
+        
+        # Daftarkan menu untuk chat pribadi
+        await application.bot.set_my_commands(commands)
+        
+        # Daftarkan menu untuk grup
+        await application.bot.set_my_commands(commands, scope=BotCommandScopeAllGroupChats())
     
     app.post_init = post_init
 
